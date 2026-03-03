@@ -4,6 +4,7 @@ import random
 import requests
 from flask import Flask, request, jsonify
 from urllib.parse import unquote
+from datetime import datetime  # used in /health
 
 app = Flask(__name__)
 
@@ -21,6 +22,18 @@ def extract_video_id(url):
     if url.isdigit():
         return url
     return None
+
+@app.route('/')
+def home():
+    """Root endpoint – shows service info."""
+    return jsonify({
+        "service": "TikTok View Scraper",
+        "status": "running",
+        "endpoints": {
+            "/api/views?url=...": "Get view count for a TikTok video",
+            "/health": "Health check"
+        }
+    })
 
 @app.route('/api/views', methods=['GET'])
 def get_views():
@@ -68,7 +81,10 @@ def get_views():
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint (useful for monitoring)."""
-    return jsonify({"status": "ok", "timestamp": str(datetime.now())})
+    return jsonify({
+        "status": "ok",
+        "timestamp": datetime.now().isoformat()
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))  # Render uses PORT env
