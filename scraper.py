@@ -1,10 +1,11 @@
 import os
 import re
+import json
 import random
 import requests
 from flask import Flask, request, jsonify
 from urllib.parse import unquote
-from datetime import datetime  # used in /health
+from datetime import datetime
 
 app = Flask(__name__)
 
@@ -15,7 +16,6 @@ USER_AGENTS = [
 ]
 
 def extract_video_id(url):
-    """Extract numeric video ID from a TikTok URL."""
     match = re.search(r'/video/(\d+)', url)
     if match:
         return match.group(1)
@@ -23,9 +23,36 @@ def extract_video_id(url):
         return url
     return None
 
+def extract_views_from_html(html):
+    # Try JSON script first
+    script_pattern = r'<script id="__UNIVERSAL_DATA_FOR_LAYOUT__"[^>]*>(.*?)</script>'
+    match = re.search(script_pattern, html, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            stats = data['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct']['stats']
+            views = stats.get('playCount') or stats.get('viewCount')
+            if views is not None:
+                return int(views)
+        except (KeyError, json.JSONDecodeError, TypeError):
+            pass
+
+    # Fallback to original regex patterns
+    patterns = [
+        r'"playCount":(\d+)',
+        r'"playCount"\s*:\s*(\d+)',
+        r'"viewCount"\s*:\s*(\d+)',
+        r'"view_count"\s*:\s*(\d+)'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if match:
+            return int(match.group(1))
+
+    return None
+
 @app.route('/')
 def home():
-    """Root endpoint – shows service info."""
     return jsonify({
         "service": "TikTok View Scraper",
         "status": "running",
@@ -37,18 +64,16 @@ def home():
 
 @app.route('/api/views', methods=['GET'])
 def get_views():
-    """Endpoint to fetch TikTok video views."""
     url_param = request.args.get('url')
     if not url_param:
         return jsonify({"error": "Missing url parameter"}), 400
 
-    # Decode the URL (sent encoded by main app)
     video_url = unquote(url_param)
     video_id = extract_video_id(video_url)
     if not video_id:
         return jsonify({"error": "Invalid TikTok URL"}), 400
 
-    # Build a generic TikTok video page URL (username doesn't matter)
+    # Use the same URL format as your original working bot
     fetch_url = f"https://www.tiktok.com/@any/video/{video_id}"
     headers = {
         "User-Agent": random.choice(USER_AGENTS),
@@ -57,35 +82,25 @@ def get_views():
     }
 
     try:
-        resp = requests.get(fetch_url, headers=headers, timeout=15)
+        resp = requests.get(fetch_url, headers=headers, timeout=15, allow_redirects=True)
         html = resp.text
 
-        # Common patterns where view count appears in TikTok's HTML/JSON
-        patterns = [
-            r'"playCount":(\d+)',
-            r'"playCount"\s*:\s*(\d+)',
-            r'"viewCount"\s*:\s*(\d+)',
-            r'"view_count"\s*:\s*(\d+)'
-        ]
-
-        for pattern in patterns:
-            match = re.search(pattern, html)
-            if match:
-                views = int(match.group(1))
-                return jsonify({"views": views})
-
-        return jsonify({"error": "View count not found"}), 404
+        views = extract_views_from_html(html)
+        if views is not None:
+            return jsonify({"views": views})
+        else:
+            return jsonify({"error": "View count not found"}), 404
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"Error fetching views: {e}")
+        return jsonify({"error": "Failed to retrieve video data"}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check endpoint (useful for monitoring)."""
     return jsonify({
         "status": "ok",
         "timestamp": datetime.now().isoformat()
     })
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))  # Render uses PORT env
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
